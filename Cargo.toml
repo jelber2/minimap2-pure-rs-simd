@@ -23,6 +23,7 @@ env_logger = "0.11"
 thiserror = "2"
 flate2 = "1"
 memchr = "2"
+simd-minimizers = "0.1"
 
 [dev-dependencies]
 criterion = "0.5"
