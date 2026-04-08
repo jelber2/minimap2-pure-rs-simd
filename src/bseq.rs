@@ -1,5 +1,8 @@
-use std::io::{self, BufRead, Read};
+use std::io::{self, Read};
 use flate2::read::GzDecoder;
+use noodles::io::Reader;
+use noodles::fasta;
+use noodles::fastq;
 
 /// A single sequence record from FASTA/FASTQ.
 #[derive(Clone, Debug)]
@@ -12,13 +15,14 @@ pub struct BseqRecord {
 }
 
 /// FASTA/FASTQ file reader supporting plain text and gzip.
+pub enum BseqReader {
+    Fasta(fasta::Reader<Box<dyn Read>>),
+    Fastq(fastq::Reader<Box<dyn Read>>),
+}
+
 pub struct BseqFile {
-    reader: Box<dyn BufRead>,
-    buf: String,
+    reader: BseqReader,
     is_fastq: bool,
-    /// Stashed header line for FASTA multi-line reading.
-    stashed_header: Option<String>,
-    eof: bool,
 }
 
 impl BseqFile {
@@ -39,114 +43,90 @@ impl BseqFile {
                 Box::new(chain)
             }
         };
-        let mut reader = io::BufReader::new(file);
 
-        // Read first line to detect format
-        let mut first_line = String::new();
-        let n = reader.read_line(&mut first_line)?;
-        if n == 0 {
-            return Ok(Self {
-                reader: Box::new(reader),
-                buf: String::new(),
-                is_fastq: false,
-                stashed_header: None,
-                eof: true,
-            });
-        }
-        let is_fastq = first_line.starts_with('@');
-        let stashed_header = Some(first_line.trim_end().to_string());
+        // Detect format by trying to peek at first byte
+        let mut peek_buf = [0u8; 1];
+        let file_ref = &mut io::BufReader::new(file);
+        let n = file_ref.read(&mut peek_buf)?;
+        
+        let is_fastq = if n > 0 {
+            peek_buf[0] == b'@'
+        } else {
+            false
+        };
 
-        Ok(Self {
-            reader: Box::new(reader),
-            buf: String::new(),
-            is_fastq,
-            stashed_header,
-            eof: false,
-        })
-    }
+        // Create fresh reader with full file
+        let file: Box<dyn Read> = if path == "-" {
+            Box::new(io::stdin())
+        } else {
+            let f = std::fs::File::open(path)?;
+            let mut peek = [0u8; 2];
+            let mut f = io::BufReader::new(f);
+            let n = f.read(&mut peek)?;
+            if n >= 2 && peek[0] == 0x1f && peek[1] == 0x8b {
+                let chain = io::Cursor::new(peek[..n].to_vec()).chain(f);
+                Box::new(GzDecoder::new(chain))
+            } else {
+                let chain = io::Cursor::new(peek[..n].to_vec()).chain(f);
+                Box::new(chain)
+            }
+        };
 
-    /// Read a line from the reader into self.buf.
-    fn read_line(&mut self) -> io::Result<usize> {
-        self.buf.clear();
-        self.reader.read_line(&mut self.buf)
+        let reader = if is_fastq {
+            BseqReader::Fastq(fastq::Reader::new(file))
+        } else {
+            BseqReader::Fasta(fasta::Reader::new(file))
+        };
+
+        Ok(Self { reader, is_fastq })
     }
 
     /// Read one FASTA/FASTQ record. Returns None at EOF.
     pub fn read_record(&mut self) -> io::Result<Option<BseqRecord>> {
-        if self.eof {
-            return Ok(None);
-        }
-
-        // Get header line (from stash or read new)
-        let header = match self.stashed_header.take() {
-            Some(h) => h,
-            None => {
-                let n = self.read_line()?;
-                if n == 0 {
-                    self.eof = true;
-                    return Ok(None);
+        match &mut self.reader {
+            BseqReader::Fasta(reader) => {
+                let mut record = fasta::Record::default();
+                match reader.read_record(&mut record) {
+                    Ok(0) => Ok(None),
+                    Ok(_) => {
+                        let name = String::from_utf8_lossy(record.name()).to_string();
+                        let comment = String::from_utf8_lossy(record.description().unwrap_or(b"")).to_string();
+                        let mut seq = record.sequence().to_vec();
+                        u_to_t(&mut seq);
+                        let l_seq = seq.len();
+                        Ok(Some(BseqRecord {
+                            name,
+                            seq,
+                            qual: Vec::new(),
+                            comment,
+                            l_seq,
+                        }))
+                    }
+                    Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
                 }
-                self.buf.trim_end().to_string()
             }
-        };
-
-        if header.is_empty() {
-            self.eof = true;
-            return Ok(None);
-        }
-
-        // Parse header: strip leading > or @, split name from comment
-        let header_content = if header.starts_with('>') || header.starts_with('@') {
-            &header[1..]
-        } else {
-            &header
-        };
-        let (name, comment) = parse_header(header_content);
-
-        if self.is_fastq {
-            // FASTQ: single line seq, +, qual
-            let n = self.read_line()?;
-            if n == 0 {
-                self.eof = true;
-                return Ok(None);
-            }
-            let mut seq: Vec<u8> = self.buf.trim_end().as_bytes().to_vec();
-            u_to_t(&mut seq);
-
-            // Read + line
-            self.read_line()?;
-
-            // Read quality line
-            let n = self.read_line()?;
-            let qual = if n > 0 {
-                self.buf.trim_end().as_bytes().to_vec()
-            } else {
-                Vec::new()
-            };
-
-            let l_seq = seq.len();
-            Ok(Some(BseqRecord { name, seq, qual, comment, l_seq }))
-        } else {
-            // FASTA: multi-line sequence until next > or EOF
-            let mut seq = Vec::new();
-            loop {
-                let n = self.read_line()?;
-                if n == 0 {
-                    self.eof = true;
-                    break;
+            BseqReader::Fastq(reader) => {
+                let mut record = fastq::Record::default();
+                match reader.read_record(&mut record) {
+                    Ok(0) => Ok(None),
+                    Ok(_) => {
+                        let name = String::from_utf8_lossy(record.name()).to_string();
+                        let comment = String::from_utf8_lossy(record.description().unwrap_or(b"")).to_string();
+                        let mut seq = record.sequence().to_vec();
+                        u_to_t(&mut seq);
+                        let qual = record.quality_scores().to_vec();
+                        let l_seq = seq.len();
+                        Ok(Some(BseqRecord {
+                            name,
+                            seq,
+                            qual,
+                            comment,
+                            l_seq,
+                        }))
+                    }
+                    Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
                 }
-                let line = self.buf.trim_end().to_string();
-                if line.starts_with('>') {
-                    // Next record header — stash it
-                    self.stashed_header = Some(line);
-                    break;
-                }
-                let mut line_bytes = line.into_bytes();
-                u_to_t(&mut line_bytes);
-                seq.extend_from_slice(&line_bytes);
             }
-            let l_seq = seq.len();
-            Ok(Some(BseqRecord { name, seq, qual: Vec::new(), comment, l_seq }))
         }
     }
 
@@ -173,7 +153,7 @@ impl BseqFile {
     }
 
     pub fn is_eof(&self) -> bool {
-        self.eof
+        false // Noodles readers don't expose EOF state; rely on read_record returning None
     }
 }
 
@@ -183,13 +163,6 @@ fn u_to_t(seq: &mut [u8]) {
         if *b == b'u' || *b == b'U' {
             *b -= 1;
         }
-    }
-}
-
-fn parse_header(s: &str) -> (String, String) {
-    match s.split_once(|c: char| c.is_whitespace()) {
-        Some((name, comment)) => (name.to_string(), comment.to_string()),
-        None => (s.to_string(), String::new()),
     }
 }
 
