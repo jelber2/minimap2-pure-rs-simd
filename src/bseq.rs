@@ -1,6 +1,5 @@
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 use flate2::read::GzDecoder;
-use noodles::io::Reader;
 use noodles::fasta;
 use noodles::fastq;
 
@@ -16,13 +15,12 @@ pub struct BseqRecord {
 
 /// FASTA/FASTQ file reader supporting plain text and gzip.
 pub enum BseqReader {
-    Fasta(fasta::Reader<Box<dyn Read>>),
-    Fastq(fastq::Reader<Box<dyn Read>>),
+    Fasta(fasta::io::Reader<Box<dyn Read>>),
+    Fastq(fastq::io::Reader<Box<dyn Read>>),
 }
 
 pub struct BseqFile {
     reader: BseqReader,
-    is_fastq: bool,
 }
 
 impl BseqFile {
@@ -44,7 +42,7 @@ impl BseqFile {
             }
         };
 
-        // Detect format by trying to peek at first byte
+        // Peek first byte to detect format
         let mut peek_buf = [0u8; 1];
         let file_ref = &mut io::BufReader::new(file);
         let n = file_ref.read(&mut peek_buf)?;
@@ -52,10 +50,10 @@ impl BseqFile {
         let is_fastq = if n > 0 {
             peek_buf[0] == b'@'
         } else {
-            false
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty file"));
         };
 
-        // Create fresh reader with full file
+        // Re-open file for reading
         let file: Box<dyn Read> = if path == "-" {
             Box::new(io::stdin())
         } else {
@@ -73,12 +71,12 @@ impl BseqFile {
         };
 
         let reader = if is_fastq {
-            BseqReader::Fastq(fastq::Reader::new(file))
+            BseqReader::Fastq(fastq::io::Reader::new(file))
         } else {
-            BseqReader::Fasta(fasta::Reader::new(file))
+            BseqReader::Fasta(fasta::io::Reader::new(file))
         };
 
-        Ok(Self { reader, is_fastq })
+        Ok(Self { reader })
     }
 
     /// Read one FASTA/FASTQ record. Returns None at EOF.
