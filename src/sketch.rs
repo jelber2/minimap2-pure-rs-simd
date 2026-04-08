@@ -1,6 +1,5 @@
 use crate::types::Mm128;
-use packed_seq::{PackedSeqVec, SeqVec, Seq};
-use simd_minimizers;
+use simd_minimizers::packed_seq::{PackedSeqVec, SeqVec, Seq};
 
 /// Find symmetric (w,k)-minimizers on a DNA sequence.
 ///
