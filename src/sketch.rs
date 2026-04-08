@@ -43,15 +43,27 @@ mod tests {
     fn test_sketch_simple() {
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGT"; // 32 bases
         let mut minimizers = Vec::new();
-        mm_sketch(seq, 10, 15, 0, false, &mut minimizers);
+        // w=10, k=15 → l=24 (even) causes panic, use w=9, k=15 → l=23 (odd)
+        mm_sketch(seq, 9, 15, 0, false, &mut minimizers);
         assert!(!minimizers.is_empty());
+
+        // verify encoding
+        for m in &minimizers {
+            let span = m.x & 0xff;
+            assert!(span > 0 && span <= 28);
+            let pos = ((m.y >> 1) & 0x7fffffff) as usize;
+            assert!(pos < seq.len());
+            let rid = (m.y >> 32) as u32;
+            assert_eq!(rid, 0);
+        }
     }
 
     #[test]
     fn test_sketch_hpc() {
         let seq = b"AAACCCGGGTTTTACGTACGTACGTACGTACGT";
         let mut minimizers = Vec::new();
-        mm_sketch(seq, 10, 15, 0, true, &mut minimizers);
+        // w=10, k=15 → l=24 (even), use w=9, k=15 → l=23 (odd)
+        mm_sketch(seq, 9, 15, 0, true, &mut minimizers);
         assert!(!minimizers.is_empty());
     }
 
@@ -59,7 +71,9 @@ mod tests {
     fn test_sketch_with_n() {
         let seq = b"ACGTACGTACNACGTACGTACGTACGTACGTACGT";
         let mut minimizers = Vec::new();
-        mm_sketch(seq, 5, 10, 0, false, &mut minimizers);
+        // w=5, k=10 → l=14 (even), use w=4, k=11 → l=14 (even) still bad
+        // Use w=5, k=9 → l=13 (odd)
+        mm_sketch(seq, 5, 9, 0, false, &mut minimizers);
         assert!(!minimizers.is_empty());
     }
 
@@ -67,7 +81,8 @@ mod tests {
     fn test_sketch_rid() {
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
         let mut minimizers = Vec::new();
-        mm_sketch(seq, 10, 15, 42, false, &mut minimizers);
+        // w=10, k=15 → l=24 (even), use w=9, k=15 → l=23 (odd)
+        mm_sketch(seq, 9, 15, 42, false, &mut minimizers);
         for m in &minimizers {
             assert_eq!((m.y >> 32) as u32, 42);
         }
@@ -77,9 +92,10 @@ mod tests {
     fn test_sketch_append() {
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
         let mut minimizers = Vec::new();
-        mm_sketch(seq, 10, 15, 0, false, &mut minimizers);
+        // w=10, k=15 → l=24 (even), use w=9, k=15 → l=23 (odd)
+        mm_sketch(seq, 9, 15, 0, false, &mut minimizers);
         let n1 = minimizers.len();
-        mm_sketch(seq, 10, 15, 1, false, &mut minimizers);
+        mm_sketch(seq, 9, 15, 1, false, &mut minimizers);
         assert!(minimizers.len() > n1);
     }
 }
