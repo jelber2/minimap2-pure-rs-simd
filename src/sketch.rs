@@ -19,10 +19,10 @@ pub fn mm_sketch(seq: &[u8], w: usize, k: usize, rid: u32, is_hpc: bool, p: &mut
     // Call simd-minimizers to get minimizer positions
     let min_pos = if is_hpc {
         // HPC mode: use canonical minimizers
-        simd_minimizers::canonical_minimizer_positions(packed_seq.as_slice())
+        simd_minimizers::canonical_minimizer_positions(packed_seq.as_slice(), k, w)
     } else {
         // Standard mode: use canonical minimizers
-        simd_minimizers::canonical_minimizer_positions(packed_seq.as_slice())
+        simd_minimizers::canonical_minimizer_positions(packed_seq.as_slice(), k, w)
     };
 
     // Convert results to Mm128 format
